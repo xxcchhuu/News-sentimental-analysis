@@ -1,0 +1,99 @@
+import json
+import os
+import boto3
+import requests
+import pg8000
+from textblob import TextBlob
+from datetime import datetime
+
+s3 = boto3.client("s3")
+
+def lambda_handler(event, context):
+    try:
+        news_api_key = os.environ["NEWS_API_KEY"]
+        bucket_name = os.environ["BUCKET_NAME"]
+
+        response = requests.get(
+            f"https://newsapi.org/v2/top-headlines?country=us&apiKey={news_api_key}",
+            timeout=10
+        )
+
+        if response.status_code != 200:
+            return {
+                "statusCode": 500,
+                "body": response.text
+            }
+
+        articles = response.json().get("articles", [])
+        processed_articles = []
+
+        conn = pg8000.connect(
+            host=os.environ["DB_HOST"],
+            database=os.environ["DB_NAME"],
+            user=os.environ["DB_USER"],
+            password=os.environ["DB_PASSWORD"],
+            port=5432
+        )
+
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS news_articles (
+                id SERIAL PRIMARY KEY,
+                title TEXT,
+                description TEXT,
+                published_at TEXT,
+                sentiment_score FLOAT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        for article in articles:
+            title = article.get("title") or ""
+            description = article.get("description") or ""
+            published_at = article.get("publishedAt") or ""
+
+            text = title + " " + description
+            sentiment_score = TextBlob(text).sentiment.polarity
+
+            processed_articles.append({
+                "title": title,
+                "description": description,
+                "published_at": published_at,
+                "sentiment_score": sentiment_score
+            })
+
+            cursor.execute("""
+                INSERT INTO news_articles
+                (title, description, published_at, sentiment_score)
+                VALUES (%s, %s, %s, %s)
+            """, (title, description, published_at, sentiment_score))
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        file_name = f"raw-news/news-{datetime.utcnow().strftime('%Y-%m-%d-%H-%M-%S')}.json"
+
+        s3.put_object(
+            Bucket=bucket_name,
+            Key=file_name,
+            Body=json.dumps(processed_articles),
+            ContentType="application/json"
+        )
+
+        return {
+            "statusCode": 200,
+            "body": json.dumps({
+                "message": "News saved to S3 and RDS successfully using TextBlob",
+                "articles_saved": len(processed_articles),
+                "s3_file": file_name
+            })
+        }
+
+    except Exception as e:
+        print("ERROR:", str(e))
+        return {
+            "statusCode": 500,
+            "body": json.dumps({"error": str(e)})
+        }
