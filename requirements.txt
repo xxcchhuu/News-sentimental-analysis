@@ -1,0 +1,5 @@
+streamlit
+pandas
+pg8000
+matplotlib
+plotly
