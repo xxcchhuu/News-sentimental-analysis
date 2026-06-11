@@ -9,7 +9,7 @@ The application is containerized using Docker, stored in Amazon ECR, and execute
 ---
 
 ## Architecture
-e
+
 
 ![Pipeline Architecture](assets/News-pipeline.png)
 
